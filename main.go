@@ -10,6 +10,8 @@ import (
 	"regexp"
 	"runtime"
 	"runtime/pprof"
+	"sync/atomic"
+	"time"
 
 	"github.com/gnolang/gno/tm2/pkg/crypto"
 	"github.com/gnolang/gno/tm2/pkg/crypto/bip39"
@@ -22,6 +24,7 @@ func main() {
 	patternString := flag.String("pattern", "^g100", "regexp to filter results")
 	threads := flag.Int("threads", runtime.GOMAXPROCS(0), "number of threads")
 	cpuprofile := flag.String("cpuprofile", "", "write cpu profile to `file`")
+	printStats := flag.Bool("print-stats", false, "print perf stats every 10s")
 	flag.Parse()
 
 	if *cpuprofile != "" {
@@ -49,8 +52,17 @@ func main() {
 		go runLoop(pattern)
 	}
 
-	select {}
+	if *printStats {
+		for range time.Tick(time.Second * 10) {
+			val := done.Swap(0)
+			fmt.Fprintf(os.Stderr, "STATS: %d/sec\n", val/10)
+		}
+	} else {
+		select {}
+	}
 }
+
+var done atomic.Uint64
 
 func runLoop(pattern *regexp.Regexp) {
 	for {
@@ -58,26 +70,34 @@ func runLoop(pattern *regexp.Regexp) {
 		if err != nil {
 			panic("unable to generate mnemonic: " + err.Error())
 		}
-		result, err := generateKey(mnemonic, "", 0, 0)
+		seed, err := bip39.NewSeedWithErrorChecking(mnemonic, "")
 		if err != nil {
-			panic("unable to generate key: " + err.Error())
+			panic("could not generate seed: " + err.Error())
 		}
-		addr := result.Address()
-		if pattern.MatchString(addr.String()) {
-			fmt.Printf("ADDRESS:  %s\n", addr.String())
-			fmt.Printf("MNEMONIC: %s\n", mnemonic)
+		for i := uint32(0); i < (1 << 20); i++ {
+			result, err := generateKey(seed, 0, i)
+			if err != nil {
+				panic("unable to generate key: " + err.Error())
+			}
+			addr := result.Address()
+			if pattern.MatchString(addr.String()) {
+				fmt.Printf("ADDRESS:  %s\n", addr.String())
+				fmt.Printf("PARAMS:   ACCOUNT:%7d INDEX:%7d\n", 0, i)
+				fmt.Printf("MNEMONIC: %s\n", mnemonic)
+			}
+			done.Add(1)
 		}
 	}
 }
 
-func generateKey(mnemonic, passwd string, account, index uint32) (crypto.PubKey, error) {
+type resultKey struct {
+	pub            crypto.PubKey
+	account, index uint32
+}
+
+func generateKey(seed []byte, account, index uint32) (crypto.PubKey, error) {
 	coinType := crypto.CoinType
 	hdPath := hd.NewFundraiserParams(account, coinType, index)
-
-	seed, err := bip39.NewSeedWithErrorChecking(mnemonic, passwd)
-	if err != nil {
-		return nil, err
-	}
 
 	masterPriv, ch := hd.ComputeMastersFromSeed(seed)
 	derivedPriv, err := hd.DerivePrivateKeyForPath(masterPriv, ch, hdPath.String())
@@ -86,7 +106,6 @@ func generateKey(mnemonic, passwd string, account, index uint32) (crypto.PubKey,
 	}
 	priv := secp256k1.PrivKeySecp256k1(derivedPriv)
 
-	// encrypt private key using passphrase
 	pub := priv.PubKey()
 	return pub, nil
 }
