@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"regexp"
+	"runtime"
 	"runtime/pprof"
 
 	"github.com/gnolang/gno/tm2/pkg/crypto"
@@ -18,6 +19,7 @@ import (
 
 func main() {
 	patternString := flag.String("pattern", "^g100", "regexp to filter results")
+	threads := flag.Int("threads", runtime.GOMAXPROCS(0), "number of threads")
 	cpuprofile := flag.String("cpuprofile", "", "write cpu profile to `file`")
 	flag.Parse()
 
@@ -42,6 +44,14 @@ func main() {
 
 	pattern := regexp.MustCompile(*patternString)
 
+	for i := 0; i < *threads; i++ {
+		go runLoop(pattern)
+	}
+
+	select {}
+}
+
+func runLoop(pattern *regexp.Regexp) {
 	for {
 		mnemonic, err := keysclient.GenerateMnemonic(256)
 		if err != nil {
