@@ -1,3 +1,4 @@
+// Command gnovanity helps you generate gno vnanity addresses
 package main
 
 import (
